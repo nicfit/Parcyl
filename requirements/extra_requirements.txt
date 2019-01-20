@@ -1,0 +1,14 @@
+anytree==2.4.3                           # Required by johnnydep
+cachetools==3.0.0                        # Required by johnnydep
+colorama==0.4.1                          # Required by johnnydep
+oyaml==0.7                               # Required by johnnydep
+packaging>=17                            # Required by johnnydep
+pip==18.1                                # Required by johnnydep
+pkginfo>=1.4.2                           # Required by johnnydep
+pytoml==0.1.20                           # Required by johnnydep
+setuptools>=38.3                         # Required by johnnydep
+structlog==18.2.0                        # Required by johnnydep
+tabulate==0.8.2                          # Required by johnnydep
+wheel>=0.32.0                            # Required by johnnydep
+wimpy==0.6                               # Required by johnnydep
+johnnydep==0.7
