@@ -1,18 +1,16 @@
 #!/usr/bin/env python
-import io
 import os
-import re
 import sys
 import shlex
-import typing
 import logging
+import warnings
 import functools
-import importlib
 import setuptools
 import configparser
 from enum import Enum
 from pathlib import Path
 from operator import attrgetter
+from collections import namedtuple
 
 from pkg_resources import (RequirementParseError,
                            Requirement as _RequirementBase)
@@ -28,33 +26,39 @@ try:
 except ImportError:
     johnnydep = None
 
-__version__ = "1.0a1"
-__project_name__ = "Parcyl"
-__url__ = "https://github.com/nicfit/parcyl"
-__author__ = "Travis Shirk"
-__author_email__ = "travis@pobox.com"
-
 _EXTRA = "extra_"
 _REQ_D = Path("requirements")
-_SETUP_CFG = Path("setup.cfg")
-_CFG_SECT = f"tool:{__project_name__.lower()}"
-_log = logging.getLogger(__project_name__.lower())
+_CFG_INFO_SECT = "parcyl"
+_CFG_REQS_SECT = "parcyl:requirements"
 
-SETUP_ATTRS = {"name", "version", "author", "author_email", "url", "license", "description",
-               "entry_points",
-              }
-EXTRA_ATTRS = {"release_name", "github_url"}
-about_file_attrs_map = {"name": "__project_name__",
-                        "version": "__version__",
-                        "author": "__author__",
-                        "author_email": "__author_email__",
-                        "url": "__url__",
-                        "license": "__license__",
-                        "description": "__description__",
-                        "release_name": "__release_name__",
-                        "github_url": "__github_url__",
-                        }
+STATUS_CLASSIFIERS = {
+    # "alpha": "Development Status :: 1 - Planning",
+    # "alpha": "Development Status :: 2 - Pre-Alpha",
+    "alpha": "Development Status :: 3 - Alpha",
+    "beta": "Development Status :: 4 - Beta",
+    "final": "Development Status :: 5 - Production/Stable",
+    # "final": "Development Status :: 6 - Mature",
+    # "final": "Development Status :: 7 - Inactive",
+}
+_log = logging.getLogger("parcyl")
 
+SETUP_ATTRS = {
+    "name": "project_name",
+    "version": "version",
+    "author": "author",
+    "author_email": "author_email",
+    "url": "url",
+    "license": "license",
+    "description": "description",
+    "long_description": "long_description",
+    "classifiers": "classifiers",
+    "keywords": "keywords",
+}
+EXTRA_ATTRS = {
+    "release_name": "release_name",
+    "github_url": "github_url",
+    "years": "years",
+}
 
 find_packages = setuptools.find_packages
 
@@ -73,8 +77,91 @@ def setup(**setup_attrs):
     return s
 
 
+class SetupCfg(configparser.ConfigParser):
+    SETUP_CFG = Path("setup.cfg")
+
+    def __init__(self):
+        super().__init__()
+
+        if self.SETUP_CFG.exists():
+            self.read([str(self.SETUP_CFG)])
+
+        self.attrs = self._initAttrs()
+        self.requirements = self._initRequirements(self.attrs)
+
+    def _initAttrs(self):
+        attrs = {}
+        for attr, var in dict(SETUP_ATTRS, **EXTRA_ATTRS).items():
+            val = self.get(_CFG_INFO_SECT, var, fallback=None)
+
+            if attr == "name" and val:
+                attrs["project_name"] = val
+                attrs["pypi_name"] = val
+                attrs["project_slug"] = val.lower()
+            elif attr == "version" and val:
+                _, release, version_info = self._parseVersion(val)
+                attrs["release"] = release
+                attrs["version_info"] = version_info
+            elif attr == "classifiers" and val:
+                val = list([c.strip() for c in val.split("\n") if c.strip()])
+            elif attr == "keywords":
+                kwords = list()  # If keywords is passed to setup it must be a list, not None
+                if val:
+                    for item in val.split():
+                        csvals = item.split(",")
+                        kwords += [v.strip(" ,\n") for v in csvals if v]
+                val = kwords
+
+            attrs[attr] = val
+
+        return attrs
+
+    def _initRequirements(self, attrs):
+        requirements = SetupRequirements(self)
+
+        for setup_arg, attr in [("install_requires", attrgetter("install")),
+                                ("tests_require", attrgetter("test")),
+                                ("extras_require", attrgetter("extras")),
+                                ("setup_requires", attrgetter("setup")),
+                               ]:
+            if setup_arg not in attrs:
+                if setup_arg != "extras_require":
+                    attrs[setup_arg] = list([str(r) for r in attr(requirements)])
+                else:
+                    extras = attr(requirements)
+                    attrs[setup_arg] = dict(
+                        {extra: list([str(r) for r in extras[extra]])
+                         for extra, reqs in attr(requirements).items()
+                         })
+            else:
+                raise ValueError(f"`{setup_arg}` must be set via requirements file.")
+
+        return requirements
+
+    @staticmethod
+    def _parseVersion(v):
+        ver, rel = v, "final"
+        for c in ("a", "b", "c"):
+            parsed = v.split(c)
+            if len(parsed) == 2:
+                ver, rel = (parsed[0], c + parsed[1])
+
+        v = tuple((int(v) for v in ver.split(".")))
+        ver_info = namedtuple("Version", "major, minor, maint, release")(
+            *(v + (tuple((0,)) * (3 - len(v))) + tuple((rel,))))
+        return ver, rel, ver_info
+
+
 class Setup:
-    def __init__(self, **setup_attrs):
+    def __init__(self, info_file=None, **setup_attrs):
+        self.config = SetupCfg()
+        self.attrs = self.config.attrs
+        self.requirements = self.config.requirements
+
+        for what in SETUP_ATTRS:
+            if what not in self.attrs:
+                print(f"setup attribute not found: {what}", file=sys.stderr)
+
         # Install commands (TODO: merge with any existing commands)
         setup_attrs["cmdclass"] = {"install": InstallCommand,
                                    "test": TestCommand,
@@ -82,86 +169,72 @@ class Setup:
                                    "develop": DevelopCommand,
                                   }
 
-        # Requirements
-        self.requirements = None
-        if _SETUP_CFG.exists():
-            self.requirements = SetupRequirements()
-            for setup_arg, attr in [("install_requires", attrgetter("install")),
-                                    ("tests_require", attrgetter("test")),
-                                    ("extras_require", attrgetter("extras")),
-                                    ("setup_requires", attrgetter("setup")),
-                                   ]:
-                if setup_arg not in setup_attrs:
-                    if setup_arg != "extras_require":
-                        setup_attrs[setup_arg] = list([str(r) for r in attr(self.requirements)])
-                    else:
-                        extras = attr(self.requirements)
-                        setup_attrs[setup_arg] = dict(
-                            {extra: list([str(r) for r in extras[extra]])
-                                       for extra, reqs in attr(self.requirements).items()
-                            })
-                else:
-                    raise ValueError(
-                        f"`{setup_arg}` must be set via requirements file.")
-
         # Final args
-        self._setup_attrs = dict(setup_attrs)
+        self._ctor_setup_attrs = dict(setup_attrs)
 
-    def __call__(self, **setup_attrs):
-        attrs = dict(self._setup_attrs)
+        if info_file is not None:
+            vinfo = self.attrs["version_info"]
+            # TODO: log this like setuptools formats msgs, and move to a build stage
+            Path(info_file).write_text(f"""
+import dataclasses
+
+project_name = "{self.attrs['name']}"
+version      = "{self.attrs['version']}"
+release_name = "{self.attrs['release_name']}"
+author       = "{self.attrs['author']}"
+author_email = "{self.attrs['author_email']}"
+years        = "{self.attrs['years']}"
+
+@dataclasses.dataclass
+class Version:
+    major: int
+    minor: int
+    maint: int
+    release: str
+    release_name: str
+
+version_info = Version({vinfo.major}, {vinfo.minor}, {vinfo.maint}, "{vinfo.release}", "{self.attrs['release_name']}")
+""".strip())   # noqa: E501
+
+    def __call__(self, add_status_classifiers=True, **setup_attrs):
+        attrs = {}
+        attrs.update(self.attrs)
+        attrs.update(self._ctor_setup_attrs)
         attrs.update(setup_attrs)
-        setuptools.setup(**attrs)
+
+        if add_status_classifiers:
+            if attrs["classifiers"] is None:
+                attrs["classifiers"] = []
+
+            release = (attrs["release"] or "") if "release" in attrs else ""
+            if release.startswith("a"):
+                attrs["classifiers"].append(STATUS_CLASSIFIERS["alpha"])
+            elif release.startswith("b"):
+                attrs["classifiers"].append(STATUS_CLASSIFIERS["beta"])
+            else:
+                attrs["classifiers"].append(STATUS_CLASSIFIERS["final"])
+
+        # Found it difficult to hook into setuptools to *add* this option.
+        # Ideally, `setup.py --version --release-name` would do the right order, not here.
+        if "--release-name" in sys.argv[1:]:
+            print(self.attrs["release_name"])
+            sys.argv.remove("--release-name")
+
+        # The extra command line options we added cause warnings, quell that.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Unknown distribution option")
+            warnings.filterwarnings("ignore", message="Normalizing")
+
+            setuptools.setup(**attrs)
 
     def with_packages(self, *pkg_dirs, exclude=None):
         pkgs = []
-        if "packages" not in self._setup_attrs:
-            self._setup_attrs["packages"] = []
+        if "packages" not in self.attrs:
+            self.attrs["packages"] = []
         for d in pkg_dirs:
             pkgs += find_packages(d, exclude=exclude)
-        self._setup_attrs["packages"] += pkgs
+        self.attrs["packages"] += pkgs
         return self
-
-    @staticmethod
-    def attrsFromFile(info_filename: typing.Union[Path, str], attr_map=None, quiet=False,
-                      extra_attrs=None):
-        info_dict = {}
-        extra_dict = {}
-        if not isinstance(info_filename, Path):
-            info_filename = Path(info_filename)
-        attr_map = attr_map or about_file_attrs_map
-
-        if info_filename.suffix == ".py":
-            mod = importlib.import_module(info_filename.stem)
-            for what in attr_map.keys():
-                if hasattr(mod, attr_map[what]):
-                    (info_dict if what in SETUP_ATTRS
-                               else extra_dict)[what] = getattr(mod, attr_map[what])
-        else:
-            with io.open(str(info_filename), encoding='utf-8') as infof:
-                for line in infof:
-                    for what in attr_map.keys():
-                        rex = re.compile(rf"{attr_map[what]}\s*=\s*['\"](.*?)['\"]")
-                        m = rex.match(line.strip())
-                        if not m:
-                            continue
-
-                        (info_dict if what in SETUP_ATTRS else extra_dict)[what] = m.groups()[0]
-
-        vparts = info_dict["version"].split("-", maxsplit=1)
-        extra_dict["release"] = vparts[1] if len(vparts) > 1 else "final"
-
-        if not quiet:
-            for what in attr_map:
-                if what not in info_dict:
-                    print(f"Package info not found: {what}", file=sys.stderr)
-
-        for attr, val in (extra_attrs or {}).items():
-            d = info_dict if attr in SETUP_ATTRS else extra_dict
-            if attr in d and not quiet:
-                print(f"extra_attrs override of {attr}", file=sys.stderr)
-            d[attr] = val
-
-        return info_dict, extra_dict
 
 
 @functools.total_ordering
@@ -191,6 +264,9 @@ class Requirement:
             return self._scm_requirement_string
 
         s = self.project_name
+
+        if self.extras:
+            s += f"[{','.join(self.extras)}]"
 
         if specs == self.SpecsOpt.CURRENT:
             s += ",".join([f"{op}{ver}" for op, ver in self.specs])
@@ -228,6 +304,10 @@ class Requirement:
         return self._requirement.marker
 
     @property
+    def extras(self):
+        return self._requirement.extras
+
+    @property
     def version_installed(self):
         return self.dist.version_installed
 
@@ -242,7 +322,7 @@ class Requirement:
     @classmethod
     def parse(klass, s):
         parse_string = s
-        scm_requirement = False
+        scm_requirement = None
 
         if (s.startswith("git+") or s.startswith("hg+") or s.startswith("snv+")
                 or s.startswith("bzr+")):
@@ -254,6 +334,7 @@ class Requirement:
                 parse_string = s[beg + 1:]
                 if end > beg:
                     parse_string = parse_string[:end - beg - 1]
+                parse_string = parse_string.split("/")[-1]
 
             scm_requirement = s
 
@@ -281,9 +362,13 @@ class Requirement:
 
 class SetupRequirements:
     _SECTS = ("install", "test", "dev", "setup")
+    GROUPS = list(_SECTS)
 
-    def __init__(self):
-        self._req_dict = self._loadIni(_SETUP_CFG)
+    def __init__(self, req_config=None):
+        if not req_config:
+            req_config = SetupCfg()
+
+        self._req_dict = self._loadCfg(req_config)
 
     def _getter(self, sect):
         return self._req_dict[sect] if sect in self._req_dict else []
@@ -311,39 +396,44 @@ class SetupRequirements:
             extras[sect[len(_EXTRA):]] = self._req_dict[sect]
         return extras
 
-    def _loadIni(self, req_ini):
-        reqs = {}
-        req_config = configparser.ConfigParser()
-        req_config.read([str(req_ini)])
+    def _loadCfg(self, req_config):
+        if not req_config.has_section(_CFG_REQS_SECT):
+            return {}
 
-        for opt in req_config.options(_CFG_SECT):
+        reqs = {}
+        for opt in req_config.options(_CFG_REQS_SECT):
             if opt in self._SECTS or opt.startswith(_EXTRA):
                 reqs[opt] = list()
-                deps = req_config.get(_CFG_SECT, opt)
+                deps = req_config.get(_CFG_REQS_SECT, opt)
                 if deps:
                     for line in deps.split("\n"):
                         reqs[opt] += [Requirement.parse(s.strip()) for s in line.split(",")]
 
         return reqs
 
-    def write(self, include_extras=False, freeze=False, upgrade=False, deep=False):
-
+    def write(self, include_extras=True, freeze=False, upgrade=False, deep=False, groups=None):
         if not _REQ_D.exists():
             raise NotADirectoryError(str(_REQ_D))
 
-        for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k]]:
+        groups = groups or list([k for k in self._req_dict.keys() if self._req_dict[k]]
+                                + ["requirements"]
+                               )
+
+        for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
+            # Individual requirements files
             RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp])\
-                .write(upgrade=upgrade, freeze=freeze, deep=deep)
+                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
 
-        # Make top-level requirements.txt files
-        pkg_reqs = []
-        for name, pkgs in self._req_dict.items():
-            if name == "install" or (name.startswith(_EXTRA) and include_extras):
-                pkg_reqs += pkgs or []
+        if "requirements" in groups:
+            # Make top-level requirements.txt files
+            pkg_reqs = []
+            for name, pkgs in self._req_dict.items():
+                if name == "install" or (name.startswith(_EXTRA) and include_extras):
+                    pkg_reqs += pkgs or []
 
-        if pkg_reqs:
-            RequirementsDotText("requirements.txt", reqs=pkg_reqs)\
-                .write(upgrade=upgrade, freeze=freeze, deep=deep)
+            if pkg_reqs and "requirements" in groups:
+                RequirementsDotText("requirements.txt", reqs=pkg_reqs) \
+                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
 
 
 class RequirementsDotText:
@@ -362,11 +452,11 @@ class RequirementsDotText:
 
     @property
     def requirements(self):
-        return list(self._reqs.values())
+        return iter(self._reqs.values())
 
     @property
     def packages(self):
-        return list(self._reqs.keys())
+        return iter(self._reqs.keys())
 
     def get(self, package):
         try:
@@ -382,7 +472,6 @@ class RequirementsDotText:
             self._reqs[r.key] = r
 
     def write(self, upgrade=False, freeze=False, deep=False):
-
         def specfmt(req: Requirement, curr_reqs):
             if req.specs:
                 return Requirement.SpecsOpt.CURRENT
@@ -399,6 +488,29 @@ class RequirementsDotText:
                     else:
                         return Requirement.SpecsOpt.VERSION_LATEST
 
+        def addreq(r):
+            """Add or update the requirement in `all`."""
+            if not hasattr(r, "required_by"):
+                r.required_by = []
+
+            if r.key in all:
+                curr = all[r.key]
+                curr.required_by.append(r.required_by.pop())
+                for spec in r.specs:
+                    if spec not in curr.specs:
+                        curr.specs.append(spec)
+            else:
+                all[r.key] = r
+
+        all = {}
+        for req in sorted(self._reqs.values()):
+            # Main purpose of this loop is to find and collapse dups
+            if deep:
+                for dep in req.requires:
+                    dep.required_by = [req.project_name]
+                    addreq(dep)
+            addreq(req)
+
         filepath = Path(self.filepath)
         file_exists = filepath.exists()
         with filepath.open("r+" if file_exists else "w") as fp:
@@ -406,16 +518,12 @@ class RequirementsDotText:
 
             fp.seek(0)
             fp.truncate(0)
-            for req in sorted(self._reqs.values()):
-                if deep:
-                    for dep in req.requires:
-                        spec = specfmt(dep, curr_reqs)
-                        fp.write(
-                           f"{dep.toString(spec):<40} # Required by {req.project_name}\n"
-                        )
-
-                spec = specfmt(req, curr_reqs)
-                fp.write(f"{req.toString(spec)}\n")
+            for req in all.values():
+                if req.required_by:
+                    required_by = f" # Required by {','.join(req.required_by)}"
+                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
+                else:
+                    fp.write(f"{req.toString(specfmt(req, curr_reqs))}\n")
 
             print(f"Wrote {filepath}")
 
@@ -486,26 +594,33 @@ class PyTestCommand(TestCommand):
 
 def main():
     import argparse
+    config = SetupCfg()
 
     p = argparse.ArgumentParser(description="Python project packaging helper.")
-    p.add_argument("--version", action="version", version=__version__)
+    p.add_argument("--version", action="version", version=config.attrs["version"])
+
     subcmds = p.add_subparsers(dest="cmd")
-    subcmds.add_parser("install",
-                       help="Write a `parcyl.py` file to the current directory.")
+    subcmds.add_parser("install", help="Write a `parcyl.py` file to the current directory.")
     reqs_p = subcmds.add_parser("requirements",
                                 help="Generate and freeze requirements (setup.cfg -> *.txt)")
+
     version_updater_grp = reqs_p.add_mutually_exclusive_group()
     version_updater_grp.add_argument("-F", "--freeze", action="store_true",
                         help="Pin packages to currently install versions")
     version_updater_grp.add_argument("-U", "--upgrade", action="store_true",
                         help="Pin packages to latest version matching version specs.")
+
     reqs_p.add_argument("-D", "--deep", action="store_true",
                         help="Include the dependencies of packages.")
+    reqs_p.add_argument("req_group", action="store", nargs="*",
+                        help="Which requirements group/file to operate on.")
 
     args = p.parse_args()
+
     if args.cmd == "install":
-        parcyl_py = Path(f"{__project_name__.lower()}.py")
+        parcyl_py = Path(f"parcyl.py")
         if parcyl_py.exists():
+            # TODO: -f, --force
             print(f"{parcyl_py} already exists, remove and try again",
                   file=sys.stderr)
             return 1
@@ -520,7 +635,8 @@ def main():
                   "Try `pip install parcyl[requirements]` to install.\n", file=sys.stderr)
             args.freeze = args.upgrade = args.deep = False
 
-        req.write(freeze=args.freeze, upgrade=args.upgrade, deep=args.deep)
+        req.write(freeze=args.freeze, upgrade=args.upgrade, deep=args.deep,
+                  groups=args.req_group or None)
     else:
         p.print_usage()
 

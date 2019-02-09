@@ -33,6 +33,30 @@ def test_Req_parse():
         (">=", "3"),
     ]
 
+    rstr = "hg+https://nicfit@bitbucket.org/nicfit/sphinxcontrib-bitbucket"
+    r = Requirement.parse(rstr)
+    assert r.project_name == r.name == r.key == "sphinxcontrib-bitbucket"
+    assert r._scm_requirement_string == rstr
+    assert r.marker is None
+    assert r.specs == []
+    assert not r.extras
+
+    r = Requirement.parse("Parcyl[requirements]")
+    assert r.name == r.project_name == "Parcyl"
+    assert r.key == "parcyl"
+    assert r.marker is None
+    assert r.specs == []
+    assert r.extras == ("requirements",)
+
+    r = Requirement.parse("MishMash[postgres,web]~=0.3")
+    assert r.name == r.project_name == "MishMash"
+    assert r.key == "mishmash"
+    assert r.marker is None
+    assert r.specs == [("~=", "0.3")]
+    assert sorted(r.extras) == sorted(("web", "postgres"))
+    assert str(r) in ("MishMash[postgres,web]~=0.3", "MishMash[web,postgres]~=0.3")
+
+
 def test_Req_markereval():
     assert not Requirement.parse("rhcp ; python_version < '3'").marker.evaluate()
     assert not Requirement.parse("rhcp ; python_version < '3.4'").marker.evaluate()

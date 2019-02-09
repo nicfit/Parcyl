@@ -21,7 +21,7 @@ build the values automatically and even generate a `requirements.txt` file(s).
 To achieve this simply list all of the projects dependencies in your
 `setup.cfg`. ::
 
-    [tool:parcyl]
+    [parcyl:requirements]
     install = requests
               pathlib ; python_version < '3.4'
     test = pytest, tox
