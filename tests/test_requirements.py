@@ -1,5 +1,6 @@
 import sys
-from parcyl import Requirement
+import pytest
+from parcyl import Requirement, parseVersion
 
 
 def test_Req_parse():
@@ -73,3 +74,36 @@ def test_Req_markereval():
             == (sys.version_info[:2] == (3, 7)))
     assert (Requirement.parse("rhcp ; implementation_name == 'pypy'").marker.evaluate()
             == (sys.implementation.name == "pypy"))
+
+
+def test_parseVersion():
+    for V in ("0.8.10a3", "0.8.10-a3"):
+        vstr, v = parseVersion(V)
+        assert v.major == 0
+        assert v.minor == 8
+        assert v.maint == 10
+        assert v.release == "a3"
+        assert vstr == "0.8.10a3"
+
+    for V in ("0.3b14", "0.3b14.dev2", "0.3-b14.post1"):
+        vstr, v = parseVersion(V)
+        assert v.major == 0
+        assert v.minor == 3
+        assert v.maint == 0
+        assert v.release == "b14"
+        assert vstr == V.replace("-", "")
+
+    vstr, v = parseVersion("1")
+    assert v.major == 1
+    assert v.minor == 0
+    assert v.maint == 0
+    assert v.release == "final"
+    assert vstr == "1"
+
+
+    #v = parseVersion("0.8.10.rc1.dev666+arch-foo")
+
+def test_parseVersionInvalid():
+    for V in ("Slapshot", "Slapshot-1.0"):
+        with pytest.raises(ValueError):
+            parseVersion(V)

@@ -99,8 +99,9 @@ class SetupCfg(configparser.ConfigParser):
                 attrs["pypi_name"] = val
                 attrs["project_slug"] = val.lower()
             elif attr == "version" and val:
-                _, release, version_info = self._parseVersion(val)
-                attrs["release"] = release
+                # Note, val becomes normalized
+                val, version_info = parseVersion(val)
+                attrs["release"] = version_info.release
                 attrs["version_info"] = version_info
             elif attr == "classifiers" and val:
                 val = list([c.strip() for c in val.split("\n") if c.strip()])
@@ -137,19 +138,6 @@ class SetupCfg(configparser.ConfigParser):
                 raise ValueError(f"`{setup_arg}` must be set via requirements file.")
 
         return requirements
-
-    @staticmethod
-    def _parseVersion(v):
-        ver, rel = v, "final"
-        for c in ("a", "b", "c"):
-            parsed = v.split(c)
-            if len(parsed) == 2:
-                ver, rel = (parsed[0], c + parsed[1])
-
-        v = tuple((int(v) for v in ver.split(".")))
-        ver_info = namedtuple("Version", "major, minor, maint, release")(
-            *(v + (tuple((0,)) * (3 - len(v))) + tuple((rel,))))
-        return ver, rel, ver_info
 
 
 class Setup:
@@ -590,6 +578,31 @@ class PyTestCommand(TestCommand):
         import pytest
         errno = pytest.main(shlex.split(self.pytest_args))
         sys.exit(errno)
+
+
+def parseVersion(v):
+    from pkg_resources import parse_version
+    from pkg_resources.extern.packaging.version import Version
+
+    # Some validation and normalization (e.g. 1.0-a1 -> 1.0a1)
+    V = parse_version(v)
+    if not isinstance(V, Version):
+        raise ValueError(f"Invalid version: {v}")
+
+    ver = str(V)
+    print(V.base_version, V._version)
+    if V._version.pre:
+        rel = "".join([str(v) for v in V._version.pre])
+    else:
+        rel = "final"
+
+    # Although parsed the following components are not captured: post, dev, local, epoch
+    Version = namedtuple("Version", "major, minor, maint, release")
+    ver_info = Version(V._version.release[0],
+                       V._version.release[1] if len(V._version.release) > 1 else 0,
+                       V._version.release[2] if len(V._version.release) > 2 else 0,
+                       rel)
+    return ver, ver_info
 
 
 def main():
