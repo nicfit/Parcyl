@@ -10,8 +10,9 @@ import configparser
 from enum import Enum
 from pathlib import Path
 from operator import attrgetter
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 
+from distutils.version import StrictVersion
 from pkg_resources import (RequirementParseError,
                            Requirement as _RequirementBase)
 from setuptools.command.test import test as _TestCommand
@@ -257,7 +258,30 @@ class Requirement:
             s += f"[{','.join(self.extras)}]"
 
         if specs == self.SpecsOpt.CURRENT:
-            s += ",".join([f"{op}{ver}" for op, ver in self.specs])
+            final_specs = []
+            op_specs = defaultdict(list)
+            for op, ver in self.specs:
+                op_specs[op].append(ver)
+            for op, versions in op_specs.items():
+                if len(versions) > 1:
+                    if op[0] == ">":
+                        op_specs[op] = [sorted(versions, key=StrictVersion, reverse=True).pop(0)]
+                    elif op[0] == "<":
+                        op_specs[op] = [sorted(versions, key=StrictVersion, reverse=False).pop(0)]
+                    elif op[0] == "=":
+                        raise ValueError(f"Version conflict: ==[{','.join(versions)}]")
+                    elif op[0] == "!":
+                        pass  # All excluded version get listed
+                    elif op[0] == "~":
+                        pass  # Hmm, let pip figure it out.
+                    else:
+                        raise NotImplementedError(f"No support for op {op}")
+
+            for op, versions in op_specs.items():
+                for v in versions:
+                    final_specs.append((op, v))
+
+            s += ",".join([f"{op}{ver}" for op, ver in sorted(final_specs, reverse=True)])
         elif specs == self.SpecsOpt.VERSION_INSTALLED and self.version_installed:
             s += f"=={self.version_installed}"
         elif specs == self.SpecsOpt.VERSION_LATEST and self.version_latest_in_spec:
@@ -590,7 +614,6 @@ def parseVersion(v):
         raise ValueError(f"Invalid version: {v}")
 
     ver = str(V)
-    print(V.base_version, V._version)
     if V._version.pre:
         rel = "".join([str(v) for v in V._version.pre])
     else:

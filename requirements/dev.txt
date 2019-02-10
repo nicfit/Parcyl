@@ -1,14 +1,10 @@
-eventlet>=0.15.0                         # Required by detox
-py>=1.4.27                               # Required by detox
-tox<3.7,>=3.5                            # Required by detox
-detox==0.19
 fancycompleter>=0.8                      # Required by pdbpp
 pygments==2.3.1                          # Required by pdbpp
 wmctrl==0.3                              # Required by pdbpp
 pdbpp==0.9.5
 pkginfo>=1.4.2                           # Required by twine
 readme-renderer>=21.0                    # Required by twine
-requests!=2.15,>=2.5.0,!=2.16            # Required by twine
+requests>=2.5.0,!=2.16,!=2.15            # Required by twine
 requests-toolbelt>=0.8.0                 # Required by twine
 setuptools>=0.7.0                        # Required by twine
 tqdm>=4.14                               # Required by twine

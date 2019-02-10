@@ -24,7 +24,7 @@ test:
 
 
 test-all:
-	detox -e `tox --listenvs | grep '^py' | tr '\n' ',' | sed 's/,$$//'`
+	tox --parallel=all
 
 
 install: build
