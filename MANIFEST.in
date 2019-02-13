@@ -2,6 +2,7 @@ include parcyl.py
 include README.rst
 include Makefile
 include tox.ini
+include LICENSE
 
 recursive-include ./tests *.py
 recursive-include ./requirements *.txt

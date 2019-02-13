@@ -27,6 +27,8 @@ try:
 except ImportError:
     johnnydep = None
 
+VERSION = "1.0a4"
+
 _EXTRA = "extra_"
 _REQ_D = Path("requirements")
 _CFG_INFO_SECT = "parcyl"
@@ -60,8 +62,6 @@ EXTRA_ATTRS = {
     "github_url": "github_url",
     "years": "years",
 }
-
-find_packages = setuptools.find_packages
 
 
 def setup(**setup_attrs):
@@ -418,7 +418,7 @@ class SetupRequirements:
                 reqs[opt] = list()
                 deps = req_config.get(_CFG_REQS_SECT, opt)
                 if deps:
-                    for line in deps.split("\n"):
+                    for line in [l for l in deps.split("\n") if l.strip()]:
                         reqs[opt] += [Requirement.parse(s.strip()) for s in line.split(",")]
 
         return reqs
@@ -507,7 +507,10 @@ class RequirementsDotText:
 
             if r.key in all:
                 curr = all[r.key]
-                curr.required_by.append(r.required_by.pop())
+
+                if r.required_by:
+                    curr.required_by.append(r.required_by.pop())
+
                 for spec in r.specs:
                     if spec not in curr.specs:
                         curr.specs.append(spec)
@@ -604,6 +607,18 @@ class PyTestCommand(TestCommand):
         sys.exit(errno)
 
 
+def find_package_files(directory, prefix=".."):
+    paths = []
+    for (path, _, filenames) in os.walk(directory):
+        if "__pycache__" in path:
+            continue
+        for filename in filenames:
+            if filename.endswith(".pyc"):
+                continue
+            paths.append(os.path.join(prefix, path, filename))
+    return paths
+
+
 def parseVersion(v):
     from pkg_resources import parse_version
     from pkg_resources.extern.packaging.version import Version
@@ -628,24 +643,24 @@ def parseVersion(v):
     return ver, ver_info
 
 
-def main():
+def _main():
     import argparse
-    config = SetupCfg()
 
     p = argparse.ArgumentParser(description="Python project packaging helper.")
-    p.add_argument("--version", action="version", version=config.attrs["version"])
+    p.add_argument("--version", action="version", version=VERSION)
 
     subcmds = p.add_subparsers(dest="cmd")
-    subcmds.add_parser("install", help="Write a `parcyl.py` file to the current directory.")
+    inst_p = subcmds.add_parser("install",
+                                help="Write a `parcyl.py` file to the current directory.")
+    inst_p.add_argument("--force", action="store_true", help="Overwrite an existing parcyl.py")
+
     reqs_p = subcmds.add_parser("requirements",
                                 help="Generate and freeze requirements (setup.cfg -> *.txt)")
-
     version_updater_grp = reqs_p.add_mutually_exclusive_group()
     version_updater_grp.add_argument("-F", "--freeze", action="store_true",
                         help="Pin packages to currently install versions")
     version_updater_grp.add_argument("-U", "--upgrade", action="store_true",
                         help="Pin packages to latest version matching version specs.")
-
     reqs_p.add_argument("-D", "--deep", action="store_true",
                         help="Include the dependencies of packages.")
     reqs_p.add_argument("req_group", action="store", nargs="*",
@@ -655,11 +670,10 @@ def main():
 
     if args.cmd == "install":
         parcyl_py = Path(f"parcyl.py")
-        if parcyl_py.exists():
-            # TODO: -f, --force
-            print(f"{parcyl_py} already exists, remove and try again",
-                  file=sys.stderr)
+        if parcyl_py.exists() and not args.force:
+            print(f"{parcyl_py} already exists (use --force to overwrite)", file=sys.stderr)
             return 1
+
         print(f"Writing {parcyl_py}")
         parcyl_py.write_bytes(Path(__file__).read_bytes())
         parcyl_py.chmod(0o755)
@@ -677,6 +691,7 @@ def main():
         p.print_usage()
 
 
-__all__ = ["Setup", "setup", "find_packages"]
+find_packages = setuptools.find_packages
+__all__ = ["Setup", "setup", "find_packages", "find_package_files"]
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(_main() or 0)
