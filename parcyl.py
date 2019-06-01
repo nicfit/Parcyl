@@ -380,8 +380,9 @@ class Requirement:
 
 
 class SetupRequirements:
-    _SECTS = ("install", "test", "dev", "setup")
-    GROUPS = list(_SECTS)
+    _EXTRA = "extra_"
+    _PINS = "pins"
+    GROUPS = ["install", "test", "dev", "setup"]
 
     def __init__(self, req_config=None):
         if not req_config:
@@ -411,9 +412,13 @@ class SetupRequirements:
     @property
     def extras(self):
         extras = {}
-        for sect in [s for s in self._req_dict if s.startswith(_EXTRA)]:
-            extras[sect[len(_EXTRA):]] = self._req_dict[sect]
+        for sect in [s for s in self._req_dict if s.startswith(self._EXTRA)]:
+            extras[sect[len(self._EXTRA):]] = self._req_dict[sect]
         return extras
+
+    @property
+    def pins(self):
+        return self._getter(self._PINS)
 
     def _loadCfg(self, req_config):
         if not req_config.has_section(_CFG_REQS_SECT):
@@ -421,7 +426,7 @@ class SetupRequirements:
 
         reqs = {}
         for opt in req_config.options(_CFG_REQS_SECT):
-            if opt in self._SECTS or opt.startswith(_EXTRA):
+            if opt in self.GROUPS or opt.startswith(self._EXTRA) or opt == self._PINS:
                 reqs[opt] = list()
                 deps = req_config.get(_CFG_REQS_SECT, opt)
                 if deps:
@@ -440,23 +445,24 @@ class SetupRequirements:
 
         for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
             # Individual requirements files
-            RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp])\
+            RequirementsDotText(_REQ_D / f"{req_grp}.txt",
+                                reqs=self._req_dict[req_grp], pins=self.pins)\
                     .write(upgrade=upgrade, freeze=freeze, deep=deep)
 
         if "requirements" in groups:
             # Make top-level requirements.txt files
             pkg_reqs = []
             for name, pkgs in self._req_dict.items():
-                if name == "install" or (name.startswith(_EXTRA) and include_extras):
+                if name == "install" or (name.startswith(self._EXTRA) and include_extras):
                     pkg_reqs += pkgs or []
 
             if pkg_reqs and "requirements" in groups:
-                RequirementsDotText("requirements.txt", reqs=pkg_reqs) \
+                RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins) \
                     .write(upgrade=upgrade, freeze=freeze, deep=deep)
 
 
 class RequirementsDotText:
-    def __init__(self, filepath, file=None, reqs=None):
+    def __init__(self, filepath, file=None, reqs=None, pins=None):
         self._reqs = {}
 
         if file:
@@ -468,6 +474,7 @@ class RequirementsDotText:
                 self._readReqsTxt(fp)
 
         self.filepath = filepath
+        self._pins = list(pins) if pins else []
 
     @property
     def requirements(self):
@@ -512,6 +519,16 @@ class RequirementsDotText:
             if not hasattr(r, "required_by"):
                 r.required_by = []
 
+            # Replace any pinned requirements
+            if r.key in pins and pins[r.key] is not r:
+                pinned_r = pins[r.key]
+                if not hasattr(pinned_r, "required_by"):
+                    pinned_r.required_by = []
+                for rr in r.required_by:
+                    pinned_r.required_by.append(rr)
+
+                r = pinned_r
+
             if r.key in all:
                 curr = all[r.key]
 
@@ -525,6 +542,7 @@ class RequirementsDotText:
                 all[r.key] = r
 
         all = {}
+        pins = {r.key: r for r in self._pins}
         for req in sorted(self._reqs.values()):
             # Main purpose of this loop is to find and collapse dups
             if deep:
