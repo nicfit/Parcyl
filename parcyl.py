@@ -264,6 +264,13 @@ class Requirement:
                 op_specs[op].append(ver)
             for op, versions in op_specs.items():
                 if len(versions) > 1:
+                    for v in versions:
+                        try:
+                            _ = StrictVersion(v)
+                        except ValueError:
+                            _log.info(f"Ignoring invalid version: {v}")
+                            versions.remove(v)
+
                     if op[0] == ">":
                         op_specs[op] = [sorted(versions, key=StrictVersion, reverse=True).pop(0)]
                     elif op[0] == "<":
@@ -694,4 +701,9 @@ def _main():
 find_packages = setuptools.find_packages
 __all__ = ["Setup", "setup", "find_packages", "find_package_files"]
 if __name__ == "__main__":
-    sys.exit(_main() or 0)
+    try:
+        sys.exit(_main() or 0)
+    except Exception as uncaught:
+        import traceback
+        traceback.print_exc()
+        sys.exit(127)
