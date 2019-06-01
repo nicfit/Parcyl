@@ -439,9 +439,10 @@ class SetupRequirements:
         if not _REQ_D.exists():
             raise NotADirectoryError(str(_REQ_D))
 
-        groups = groups or list([k for k in self._req_dict.keys() if self._req_dict[k]]
-                                + ["requirements"]
-                               )
+        groups = groups or list([k for k in self._req_dict.keys()
+                                    if self._req_dict[k] and (k in self.GROUPS or
+                                                              k.startswith(_EXTRA))
+                                ]) + ["requirements"]
 
         for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
             # Individual requirements files
