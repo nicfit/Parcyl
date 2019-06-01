@@ -20,7 +20,7 @@ requirements:
 
 
 test:
-	tox -e default,coverage,lint --parallel=all -- $(PYTEST_ARGS)
+	tox -e default,coverage,lint -- $(PYTEST_ARGS)
 
 
 test-all:
