@@ -3,7 +3,7 @@ cachetools==3.1.1                        # Required by johnnydep
 colorama==0.4.1                          # Required by johnnydep
 oyaml==0.9                               # Required by johnnydep
 packaging>=17                            # Required by johnnydep
-pip==19.1.1                              # Required by johnnydep
+pip==19.2.1                              # Required by johnnydep
 pkginfo>=1.4.2                           # Required by johnnydep
 pytoml==0.1.20                           # Required by johnnydep
 setuptools>=38.3                         # Required by johnnydep

@@ -6,7 +6,7 @@ pkginfo>=1.4.2                           # Required by twine
 readme-renderer>=21.0                    # Required by twine
 requests>=2.20                           # Required by twine
 requests-toolbelt>=0.8.0,!=0.9.0         # Required by twine
-setuptools>=0.7.0                        # Required by twine
+setuptools>=38.3                         # Required by twine
 tqdm>=4.14                               # Required by twine
 twine==1.13.0
-wheel==0.33.4
+wheel>=0.32.0

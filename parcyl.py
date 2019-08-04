@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import re
 import sys
 import shlex
 import logging
@@ -7,12 +8,14 @@ import warnings
 import functools
 import setuptools
 import configparser
+import multiprocessing
 from enum import Enum
 from pathlib import Path
 from operator import attrgetter
 from collections import namedtuple, defaultdict
 
-from distutils.version import StrictVersion
+from distutils.version import StrictVersion as _StrictVersion
+from concurrent.futures import ThreadPoolExecutor, as_completed, FIRST_EXCEPTION
 from pkg_resources import (RequirementParseError,
                            Requirement as _RequirementBase)
 from setuptools.command.test import test as _TestCommand
@@ -62,6 +65,30 @@ EXTRA_ATTRS = {
     "github_url": "github_url",
     "years": "years",
 }
+
+class StrictVersion(_StrictVersion):
+    """Subclass allowing version with no minor version."""
+    version_re = re.compile(r'^(\d+) (\. (\d+))? (\. (\d+))? ([ab](\d+))?$',
+                            re.VERBOSE | re.ASCII)
+    def parse (self, vstring):
+        match = self.version_re.match(vstring)
+        if not match:
+            raise ValueError("invalid version number '%s'" % vstring)
+
+        (major, minor, patch, prerelease, prerelease_num) = \
+            match.group(1, 3, 5, 6, 7)
+
+        if patch:
+            self.version = tuple(map(int, [major, minor, patch]))
+        elif minor:
+            self.version = tuple(map(int, [major, minor])) + (0,)
+        else:
+            self.version = tuple(map(int, [major])) + (0,)
+
+        if prerelease:
+            self.prerelease = (prerelease[0], int(prerelease_num))
+        else:
+            self.prerelease = None
 
 
 def setup(**setup_attrs):
@@ -242,6 +269,9 @@ class Requirement:
         self._dist = None
         self._version_installed = None
         self._version_latest_in_spec = None
+        self._executor = None
+        if self.project_name == "requests":
+            print("RE|QUESTS:", id(self))
 
     def __str__(self):
         return self.toString()
@@ -328,15 +358,18 @@ class Requirement:
 
     @property
     def version_installed(self):
-        return self.dist.version_installed
+        return self.getDist().version_installed
 
     @property
     def version_latest_in_spec(self):
-        return self.dist.version_latest_in_spec
+        try:
+            return self.getDist().version_latest_in_spec
+        except ValueError:
+            return None
 
     @property
     def requires(self):
-        return list([Requirement.parse(r) for r in self.dist.requires])
+        return list([Requirement.parse(r) for r in self.getDist().requires])
 
     @classmethod
     def parse(klass, s):
@@ -360,8 +393,7 @@ class Requirement:
         req = _RequirementBase.parse(parse_string)
         return klass(req, scm_req=scm_requirement)
 
-    @property
-    def dist(self):
+    def getDist(self):
         if self._dist is None:
             if self._scm_requirement_string:
                 # Repo URLs have versions or a way for resolving requires
@@ -372,6 +404,7 @@ class Requirement:
 
                 self._dist = DummyDist()
             else:
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!:", self.project_name)
                 # Be sure to ignore environment markers, a dist is wanted for version info and
                 # should not infer determine installation.
                 self._dist = JohnnyDist(self.project_name)
@@ -439,6 +472,7 @@ class SetupRequirements:
         if not _REQ_D.exists():
             raise NotADirectoryError(str(_REQ_D))
 
+        output_reqs = []
         groups = groups or list([k for k in self._req_dict.keys()
                                     if self._req_dict[k] and (k in self.GROUPS or
                                                               k.startswith(_EXTRA))
@@ -446,9 +480,9 @@ class SetupRequirements:
 
         for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
             # Individual requirements files
-            RequirementsDotText(_REQ_D / f"{req_grp}.txt",
-                                reqs=self._req_dict[req_grp], pins=self.pins)\
-                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
+            output_reqs.append(
+                RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp],
+                                    pins=self.pins))
 
         if "requirements" in groups:
             # Make top-level requirements.txt files
@@ -457,9 +491,54 @@ class SetupRequirements:
                 if name == "install" or (name.startswith(self._EXTRA) and include_extras):
                     pkg_reqs += pkgs or []
 
-            if pkg_reqs and "requirements" in groups:
-                RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins) \
-                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
+            if pkg_reqs:
+                output_reqs.append(
+                    RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins)
+                )
+
+        all_reqs = []
+        for rf in output_reqs:
+            for r in rf.requirements:
+                all_reqs.append(r)
+
+        if upgrade or freeze or deep:
+            futures = []
+            def thread_func(req):
+                return (req, req.getDist())
+
+            cwd = Path.cwd()   # When using ThreadPoolExecutor we end up in /tmp/johnnydep
+            num_threads = min(len(all_reqs), multiprocessing.cpu_count())
+            with ThreadPoolExecutor(max_workers=num_threads) as exe:
+                for req in all_reqs:
+                    futures.append(exe.submit(thread_func, req))
+
+                for fut in as_completed(futures, timeout=3*len(all_reqs)):
+                    if fut.exception():
+                        raise fut.exception()
+                os.chdir(str(cwd))
+
+        all_reqs = {}
+        # Combine all dup pkg specs and let the sorting in toString can figure it out
+        for rf in output_reqs:
+            for pkg, req in rf._resolve(deep).items():
+                if pkg in all_reqs:
+                    curr = all_reqs[pkg]
+                    if pkg == "requests":
+                        print("DUP REQUESTS:", id(curr), id(req))
+                        #import pdb; pdb.set_trace()
+                        ...
+                    curr.specs.extend(req.specs)
+                    req.specs.clear()
+                    req.specs.extend(curr.specs)
+                else:
+                    all_reqs[pkg] = req
+
+        for reqf in output_reqs:
+            if "requirements.txt" in str(reqf.filepath):
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                #import pdb; pdb.set_trace()
+                ...
+            reqf.write(upgrade=upgrade, freeze=freeze, deep=deep)
 
 
 class RequirementsDotText:
@@ -476,6 +555,7 @@ class RequirementsDotText:
 
         self.filepath = filepath
         self._pins = list(pins) if pins else []
+        self._resolved_reqs = None
 
     @property
     def requirements(self):
@@ -515,6 +595,33 @@ class RequirementsDotText:
                     else:
                         return Requirement.SpecsOpt.VERSION_LATEST
 
+        print("RESOLVE START")
+        all = self._resolve(deep)
+        print("RESOLVE END")
+
+        filepath = Path(self.filepath)
+        file_exists = filepath.exists()
+        with filepath.open("r+" if file_exists else "w") as fp:
+            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)
+
+            fp.seek(0)
+            fp.truncate(0)
+            for req in all.values():
+                if req.required_by:
+                    print("11111111111111111")
+                    required_by = f" # Required by {','.join(req.required_by)}"
+                    print("2222222222222222")
+                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
+                    print("333333333333333333")
+                else:
+                    fp.write(f"{req.toString(specfmt(req, curr_reqs))}\n")
+
+            print(f"Wrote {filepath}")
+
+    def _resolve(self, deep):
+        if self._resolved_reqs:
+            return self._resolved_reqs
+
         def addreq(r):
             """Add or update the requirement in `all`."""
             if not hasattr(r, "required_by"):
@@ -552,21 +659,8 @@ class RequirementsDotText:
                     addreq(dep)
             addreq(req)
 
-        filepath = Path(self.filepath)
-        file_exists = filepath.exists()
-        with filepath.open("r+" if file_exists else "w") as fp:
-            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)
-
-            fp.seek(0)
-            fp.truncate(0)
-            for req in all.values():
-                if req.required_by:
-                    required_by = f" # Required by {','.join(req.required_by)}"
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
-                else:
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs))}\n")
-
-            print(f"Wrote {filepath}")
+        self._resolved_reqs = all
+        return self._resolved_reqs
 
 
 class Pip:
@@ -722,7 +816,7 @@ __all__ = ["Setup", "setup", "find_packages", "find_package_files"]
 if __name__ == "__main__":
     try:
         sys.exit(_main() or 0)
-    except Exception as uncaught:
+    except Exception:
         import traceback
         traceback.print_exc()
         sys.exit(127)
