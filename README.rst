@@ -1,6 +1,6 @@
 Parcyl
 ======
-Parcyl is built from and extends `setuptools`. It also provides a stradegy and
+Parcyl is built from and extends `setuptools`. It also provides a strategy and
 tools for managing project requirements.
 
 Features
@@ -54,7 +54,7 @@ requirments were listed. ::
 parcyl requirements --freeze/--upgrade
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Options exist to add (i.e. "pin") a version to each dependency. The `--freeze`
-will pit to the currently installed version, or the latest version if the package
+will pin to the currently installed version, or the latest version if the package
 is not currently installed. Use `--upgrade` to pin to the latest version every
 time. To expand the dependency tree and list each packages requirements add the
 `--deep` option. ::
@@ -82,14 +82,14 @@ Using `parcyl` looks nearly the same, so provides some immediate benefits. ::
 
 Benefits:
 
-- Extends `setuptool` rather than replacing it.
+- Extends `setuptools` rather than replacing it.
 - `install` command: Package installs of `install_requires` are performed using
   `pip`.
 - `test` command: Package installs of `install_requires`, `tests_require`, and
   any `extras_require` are performed using `pip`.
 - `pytest` command: An additional command to run tests using `pytest`.
 - `develop` command: Install all the same requirements as `test` but all the
-  `dev` requiments.
+  `dev` requirements.
 - A single location and tools for managing project dependencies
   (i.e. requirements.txt)
 
