@@ -15,7 +15,7 @@ from operator import attrgetter
 from collections import namedtuple, defaultdict
 
 from distutils.version import StrictVersion as _StrictVersion
-from concurrent.futures import ThreadPoolExecutor, as_completed, FIRST_EXCEPTION
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, Future
 from pkg_resources import (RequirementParseError,
                            Requirement as _RequirementBase)
 from setuptools.command.test import test as _TestCommand
@@ -46,7 +46,11 @@ STATUS_CLASSIFIERS = {
     # "final": "Development Status :: 6 - Mature",
     # "final": "Development Status :: 7 - Inactive",
 }
+
 _log = logging.getLogger("parcyl")
+logging.basicConfig(format="%(asctime)-15s %(clientip)s %(user)-8s %(message)s",
+                    level=logging.NOTSET)
+# FIXME: debug/info not showing up
 
 SETUP_ATTRS = {
     "name": "project_name",
@@ -66,30 +70,7 @@ EXTRA_ATTRS = {
     "years": "years",
 }
 
-class StrictVersion(_StrictVersion):
-    """Subclass allowing version with no minor version."""
-    version_re = re.compile(r'^(\d+) (\. (\d+))? (\. (\d+))? ([ab](\d+))?$',
-                            re.VERBOSE | re.ASCII)
-    def parse (self, vstring):
-        match = self.version_re.match(vstring)
-        if not match:
-            raise ValueError("invalid version number '%s'" % vstring)
-
-        (major, minor, patch, prerelease, prerelease_num) = \
-            match.group(1, 3, 5, 6, 7)
-
-        if patch:
-            self.version = tuple(map(int, [major, minor, patch]))
-        elif minor:
-            self.version = tuple(map(int, [major, minor])) + (0,)
-        else:
-            self.version = tuple(map(int, [major])) + (0,)
-
-        if prerelease:
-            self.prerelease = (prerelease[0], int(prerelease_num))
-        else:
-            self.prerelease = None
-
+_setup_cfg = None
 
 def setup(**setup_attrs):
     """A shortcut help function to use when you don't need the  `Setup` object.
@@ -105,74 +86,79 @@ def setup(**setup_attrs):
     return s
 
 
-class SetupCfg(configparser.ConfigParser):
-    SETUP_CFG = Path("setup.cfg")
+def getSetupConfig():
+    class SetupCfg(configparser.ConfigParser):
+        SETUP_CFG = Path("setup.cfg")
 
-    def __init__(self):
-        super().__init__()
+        def __init__(self):
+            super().__init__()
 
-        if self.SETUP_CFG.exists():
-            self.read([str(self.SETUP_CFG)])
+            if self.SETUP_CFG.exists():
+                self.read([str(self.SETUP_CFG)])
 
-        self.attrs = self._initAttrs()
-        self.requirements = self._initRequirements(self.attrs)
+            self.attrs = self._initAttrs()
+            self.requirements = self._initRequirements(self.attrs)
 
-    def _initAttrs(self):
-        attrs = {}
-        for attr, var in dict(SETUP_ATTRS, **EXTRA_ATTRS).items():
-            val = self.get(_CFG_INFO_SECT, var, fallback=None)
+        def _initAttrs(self):
+            attrs = {}
+            for attr, var in dict(SETUP_ATTRS, **EXTRA_ATTRS).items():
+                val = self.get(_CFG_INFO_SECT, var, fallback=None)
 
-            if attr == "name" and val:
-                attrs["project_name"] = val
-                attrs["pypi_name"] = val
-                attrs["project_slug"] = val.lower()
-            elif attr == "version" and val:
-                # Note, val becomes normalized
-                val, version_info = parseVersion(val)
-                attrs["release"] = version_info.release
-                attrs["version_info"] = version_info
-            elif attr == "classifiers" and val:
-                val = list([c.strip() for c in val.split("\n") if c.strip()])
-            elif attr == "keywords":
-                kwords = list()  # If keywords is passed to setup it must be a list, not None
-                if val:
-                    for item in val.split():
-                        csvals = item.split(",")
-                        kwords += [v.strip(" ,\n") for v in csvals if v]
-                val = kwords
+                if attr == "name" and val:
+                    attrs["project_name"] = val
+                    attrs["pypi_name"] = val
+                    attrs["project_slug"] = val.lower()
+                elif attr == "version" and val:
+                    # Note, val becomes normalized
+                    val, version_info = parseVersion(val)
+                    attrs["release"] = version_info.release
+                    attrs["version_info"] = version_info
+                elif attr == "classifiers" and val:
+                    val = list([c.strip() for c in val.split("\n") if c.strip()])
+                elif attr == "keywords":
+                    kwords = list()  # If keywords is passed to setup it must be a list, not None
+                    if val:
+                        for item in val.split():
+                            csvals = item.split(",")
+                            kwords += [v.strip(" ,\n") for v in csvals if v]
+                    val = kwords
 
-            attrs[attr] = val
+                attrs[attr] = val
 
-        return attrs
+            return attrs
 
-    def _initRequirements(self, attrs):
-        requirements = SetupRequirements(self)
+        def _initRequirements(self, attrs):
+            requirements = RequirementsCommand.SetupRequirements(self)
 
-        for setup_arg, attr in [("install_requires", attrgetter("install")),
-                                ("tests_require", attrgetter("test")),
-                                ("extras_require", attrgetter("extras")),
-                                ("setup_requires", attrgetter("setup")),
-                               ]:
-            if setup_arg not in attrs:
-                if setup_arg != "extras_require":
-                    attrs[setup_arg] = list([str(r) for r in attr(requirements)])
+            for setup_arg, attr in [("install_requires", attrgetter("install")),
+                                    ("tests_require", attrgetter("test")),
+                                    ("extras_require", attrgetter("extras")),
+                                    ("setup_requires", attrgetter("setup")),
+                                   ]:
+                if setup_arg not in attrs:
+                    if setup_arg != "extras_require":
+                        attrs[setup_arg] = list([str(r) for r in attr(requirements)])
+                    else:
+                        extras = attr(requirements)
+                        attrs[setup_arg] = dict(
+                            {extra: list([str(r) for r in extras[extra]])
+                             for extra, reqs in attr(requirements).items()
+                             })
                 else:
-                    extras = attr(requirements)
-                    attrs[setup_arg] = dict(
-                        {extra: list([str(r) for r in extras[extra]])
-                         for extra, reqs in attr(requirements).items()
-                         })
-            else:
-                raise ValueError(f"`{setup_arg}` must be set via requirements file.")
+                    raise ValueError(f"`{setup_arg}` must be set via requirements file.")
 
-        return requirements
+            return requirements
+
+    global _setup_cfg
+    if _setup_cfg is None:
+        _setup_cfg = SetupCfg()
+    return _setup_cfg
 
 
 class Setup:
     def __init__(self, info_file=None, **setup_attrs):
-        self.config = SetupCfg()
+        self.config = getSetupConfig()
         self.attrs = self.config.attrs
-        self.requirements = self.config.requirements
 
         for what in SETUP_ATTRS:
             if what not in self.attrs:
@@ -255,6 +241,8 @@ version_info = Version({vinfo.major}, {vinfo.minor}, {vinfo.maint}, "{vinfo.rele
 
 @functools.total_ordering
 class Requirement:
+    _executor = None
+    _futures = None
 
     class SpecsOpt(Enum):
         NONE = 0
@@ -264,14 +252,16 @@ class Requirement:
 
     def __init__(self, requirement, scm_req=None):
         self._scm_requirement_string = scm_req
+
         self._requirement = requirement
+        self._requirement_specs = list(requirement.specs) if requirement.specs else None
 
         self._dist = None
         self._version_installed = None
         self._version_latest_in_spec = None
-        self._executor = None
-        if self.project_name == "requests":
-            print("RE|QUESTS:", id(self))
+
+    def __repr__(self):
+        return f"<Requirement[{self.project_name}]:id={id(self)}>"
 
     def __str__(self):
         return self.toString()
@@ -369,7 +359,11 @@ class Requirement:
 
     @property
     def requires(self):
-        return list([Requirement.parse(r) for r in self.getDist().requires])
+        try:
+            return list([Requirement.parse(r) for r in self.getDist().requires])
+        except Exception as ex:
+            import pdb; pdb.set_trace()
+            ...
 
     @classmethod
     def parse(klass, s):
@@ -393,6 +387,32 @@ class Requirement:
         req = _RequirementBase.parse(parse_string)
         return klass(req, scm_req=scm_requirement)
 
+    @classmethod
+    def getDist2(Class, req):
+        def _dist():
+            if req._scm_requirement_string:
+                # Repo URLs have versions or a way for resolving requires
+                class DummyDist:
+                    requires = []
+                    version_installed = None
+                    version_latest_in_spec = None
+
+                return DummyDist()
+            else:
+                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!:", req.project_name)
+                return JohnnyDist(req.project_name)
+
+        if Class._executor is None:
+            Class._executor = ThreadPoolExecutor(max_workers=multiprocessing.cpu_count())
+            Class._futures = {}
+
+        if req.project_name in Class._futures:
+            return Class._futures[req.project_name]
+
+        future = Class._executor.submit(_dist)
+        Class._futures.append(future)
+        return future
+
     def getDist(self):
         if self._dist is None:
             if self._scm_requirement_string:
@@ -404,6 +424,7 @@ class Requirement:
 
                 self._dist = DummyDist()
             else:
+                _log.info(f"Fetching package info: {self.project_name}")
                 print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!:", self.project_name)
                 # Be sure to ignore environment markers, a dist is wanted for version info and
                 # should not infer determine installation.
@@ -411,134 +432,37 @@ class Requirement:
 
         return self._dist
 
+    def freeze(self):
+        if self._requirement_specs:
+            _log.debug(
+                f"Using original spec version {self.project_name}: {self._requirement_specs}`"
+            )
+            self._requirement.specs.clear()
+            self._requirement.specs.extend(self._requirement_specs)
+        else:
+            freeze_version = self.version_installed or self.version_latest_in_spec
+            if freeze_version:
+                _log.debug(f"Freeze version for {self.project_name}: {freeze_version}`")
+                self._requirement.specs.clear()
+                self._requirement.specs.append(("==", freeze_version))
+            else:
+                _log.warning(f"Unable to determine freeze version for {self.project_name}`")
 
-class SetupRequirements:
-    _EXTRA = "extra_"
-    _PINS = "pins"
-    GROUPS = ["install", "test", "dev", "setup"]
-
-    def __init__(self, req_config=None):
-        if not req_config:
-            req_config = SetupCfg()
-
-        self._req_dict = self._loadCfg(req_config)
-
-    def _getter(self, sect):
-        return self._req_dict[sect] if sect in self._req_dict else []
-
-    @property
-    def install(self):
-        return self._getter("install")
-
-    @property
-    def test(self):
-        return self._getter("test")
-
-    @property
-    def dev(self):
-        return self._getter("dev")
-
-    @property
-    def setup(self):
-        return self._getter("setup")
-
-    @property
-    def extras(self):
-        extras = {}
-        for sect in [s for s in self._req_dict if s.startswith(self._EXTRA)]:
-            extras[sect[len(self._EXTRA):]] = self._req_dict[sect]
-        return extras
-
-    @property
-    def pins(self):
-        return self._getter(self._PINS)
-
-    def _loadCfg(self, req_config):
-        if not req_config.has_section(_CFG_REQS_SECT):
-            return {}
-
-        reqs = {}
-        for opt in req_config.options(_CFG_REQS_SECT):
-            if opt in self.GROUPS or opt.startswith(self._EXTRA) or opt == self._PINS:
-                reqs[opt] = list()
-                deps = req_config.get(_CFG_REQS_SECT, opt)
-                if deps:
-                    for line in [l for l in deps.split("\n") if l.strip()]:
-                        reqs[opt] += [Requirement.parse(s.strip()) for s in line.split(",")]
-
-        return reqs
-
-    def write(self, include_extras=True, freeze=False, upgrade=False, deep=False, groups=None):
-        if not _REQ_D.exists():
-            raise NotADirectoryError(str(_REQ_D))
-
-        output_reqs = []
-        groups = groups or list([k for k in self._req_dict.keys()
-                                    if self._req_dict[k] and (k in self.GROUPS or
-                                                              k.startswith(_EXTRA))
-                                ]) + ["requirements"]
-
-        for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
-            # Individual requirements files
-            output_reqs.append(
-                RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp],
-                                    pins=self.pins))
-
-        if "requirements" in groups:
-            # Make top-level requirements.txt files
-            pkg_reqs = []
-            for name, pkgs in self._req_dict.items():
-                if name == "install" or (name.startswith(self._EXTRA) and include_extras):
-                    pkg_reqs += pkgs or []
-
-            if pkg_reqs:
-                output_reqs.append(
-                    RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins)
-                )
-
-        all_reqs = []
-        for rf in output_reqs:
-            for r in rf.requirements:
-                all_reqs.append(r)
-
-        if upgrade or freeze or deep:
-            futures = []
-            def thread_func(req):
-                return (req, req.getDist())
-
-            cwd = Path.cwd()   # When using ThreadPoolExecutor we end up in /tmp/johnnydep
-            num_threads = min(len(all_reqs), multiprocessing.cpu_count())
-            with ThreadPoolExecutor(max_workers=num_threads) as exe:
-                for req in all_reqs:
-                    futures.append(exe.submit(thread_func, req))
-
-                for fut in as_completed(futures, timeout=3*len(all_reqs)):
-                    if fut.exception():
-                        raise fut.exception()
-                os.chdir(str(cwd))
-
-        all_reqs = {}
-        # Combine all dup pkg specs and let the sorting in toString can figure it out
-        for rf in output_reqs:
-            for pkg, req in rf._resolve(deep).items():
-                if pkg in all_reqs:
-                    curr = all_reqs[pkg]
-                    if pkg == "requests":
-                        print("DUP REQUESTS:", id(curr), id(req))
-                        #import pdb; pdb.set_trace()
-                        ...
-                    curr.specs.extend(req.specs)
-                    req.specs.clear()
-                    req.specs.extend(curr.specs)
-                else:
-                    all_reqs[pkg] = req
-
-        for reqf in output_reqs:
-            if "requirements.txt" in str(reqf.filepath):
-                print("!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                #import pdb; pdb.set_trace()
-                ...
-            reqf.write(upgrade=upgrade, freeze=freeze, deep=deep)
+    def upgrade(self):
+        if self._requirement_specs:
+            _log.debug(
+                f"Using original spec version {self.project_name}: {self._requirement_specs}`"
+            )
+            self._requirement.specs.clear()
+            self._requirement.specs.extend(self._requirement_specs)
+        else:
+            upgrade_version = self.version_latest_in_spec
+            if upgrade_version:
+                _log.debug(f"Upgrade version for {self.project_name}: {upgrade_version}`")
+                self._requirement.specs.clear()
+                self._requirement.specs.append(("==", upgrade_version))
+            else:
+                _log.warning(f"Unable to determine upgrade version for {self.project_name}`")
 
 
 class RequirementsDotText:
@@ -578,8 +502,32 @@ class RequirementsDotText:
             r = Requirement.parse(line)
             self._reqs[r.key] = r
 
+    def write2(self, upgrade=False, freeze=False, deep=False):
+        filepath = Path(self.filepath)
+        file_exists = filepath.exists()
+        with filepath.open("r+" if file_exists else "w") as fp:
+            # FIXME: remove?
+            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)
+
+            fp.seek(0)
+            fp.truncate(0)
+            for req in self._reqs.values():
+                if hasattr(req, "required_by") and req.required_by:
+                    raise NotImplementedError("TODO")
+                    print("11111111111111111")
+                    required_by = f" # Required by {','.join(req.required_by)}"
+                    print("2222222222222222")
+                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
+                    print("333333333333333333")
+                else:
+                    fp.write(f"{req.toString()}\n")
+
+            print(f"Wrote {filepath}")
+
     def write(self, upgrade=False, freeze=False, deep=False):
+
         def specfmt(req: Requirement, curr_reqs):
+            raise NotImplementedError()
             if req.specs:
                 return Requirement.SpecsOpt.CURRENT
             elif upgrade and req.version_latest_in_spec:
@@ -599,24 +547,6 @@ class RequirementsDotText:
         all = self._resolve(deep)
         print("RESOLVE END")
 
-        filepath = Path(self.filepath)
-        file_exists = filepath.exists()
-        with filepath.open("r+" if file_exists else "w") as fp:
-            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)
-
-            fp.seek(0)
-            fp.truncate(0)
-            for req in all.values():
-                if req.required_by:
-                    print("11111111111111111")
-                    required_by = f" # Required by {','.join(req.required_by)}"
-                    print("2222222222222222")
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
-                    print("333333333333333333")
-                else:
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs))}\n")
-
-            print(f"Wrote {filepath}")
 
     def _resolve(self, deep):
         if self._resolved_reqs:
@@ -698,7 +628,7 @@ class DevelopCommand(_DevelopCommand):
     def run(self):
         Pip.install(*self.distribution.install_requires)
         Pip.install(*self.distribution.tests_require)
-        Pip.install(*SetupRequirements().dev)
+        Pip.install(*getSetupConfig().requirements.dev)
         _installExtras(self.distribution)
 
         return super().run()
@@ -739,6 +669,31 @@ def find_package_files(directory, prefix=".."):
     return paths
 
 
+class StrictVersion(_StrictVersion):
+    """Subclass allowing version with no minor version."""
+    version_re = re.compile(r'^(\d+) (\. (\d+))? (\. (\d+))? ([ab](\d+))?$',
+                            re.VERBOSE | re.ASCII)
+    def parse (self, vstring):
+        match = self.version_re.match(vstring)
+        if not match:
+            raise ValueError("invalid version number '%s'" % vstring)
+
+        (major, minor, patch, prerelease, prerelease_num) = \
+            match.group(1, 3, 5, 6, 7)
+
+        if patch:
+            self.version = tuple(map(int, [major, minor, patch]))
+        elif minor:
+            self.version = tuple(map(int, [major, minor])) + (0,)
+        else:
+            self.version = tuple(map(int, [major])) + (0,)
+
+        if prerelease:
+            self.prerelease = (prerelease[0], int(prerelease_num))
+        else:
+            self.prerelease = None
+
+
 def parseVersion(v):
     from pkg_resources import parse_version
     from pkg_resources.extern.packaging.version import Version
@@ -761,6 +716,191 @@ def parseVersion(v):
                        V._version.release[2] if len(V._version.release) > 2 else 0,
                        rel)
     return ver, ver_info
+
+
+class RequirementsCommand:
+    """Class-level namespace for `parcyl.py requirements`"""
+
+    @staticmethod
+    def iter_requirements(requirements):
+        for sect in requirements._req_dict:
+            for req in requirements._req_dict[sect]:
+                yield sect, req
+
+    @staticmethod
+    def main(args):
+        requirements = getSetupConfig().requirements
+
+        # Fetch package info,if needed
+        if True in (args.freeze, args.upgrade, args.deep):
+            cwd = Path.cwd()  # When using ThreadPoolExecutor we end up in /tmp/johnnydep
+            executor = ThreadPoolExecutor(max_workers=multiprocessing.cpu_count())
+            try:
+                futures = []
+                for sect, req in RequirementsCommand.iter_requirements(requirements):
+                    fut = executor.submit(req.getDist)
+                    if args.deep:
+                        fut.result(timeout=10)
+                        for deep_req in req.requires:
+                            futures.append(executor.submit(deep_req.getDist))
+                    else:
+                        futures.append(fut)
+
+                wait(futures, timeout=5 * len(futures))
+            finally:
+                executor.shutdown()
+                os.chdir(str(cwd))
+
+        return 1
+        # Freeze versions, expand requirements if deep=True ...
+        new_reqs = defaultdict(list)
+        for sect, req in RequirementsCommand.iter_requirements(requirements):
+            if args.freeze:
+                req.freeze()
+            elif args.upgrade:
+                req.upgrade()
+
+            if args.deep:
+                for deep_req in req.requires:
+                    new_reqs[sect].append(deep_req)
+
+                    if args.freeze:
+                        deep_req.freeze()
+                    elif args.upgrade:
+                        deep_req.upgrade()
+
+                # Update master list
+                """
+                for sect, reqs in new_reqs.items():
+                    requirements._req_dict[sect].extend(reqs)
+                """
+
+        requirements.write2(freeze=args.freeze, upgrade=args.upgrade, deep=args.deep,
+                            groups=args.req_group or None)
+
+    class SetupRequirements:
+        _EXTRA = "extra_"
+        _PINS = "pins"
+        GROUPS = ["install", "test", "dev", "setup"]
+
+        def __init__(self, req_config):
+            self._req_dict = defaultdict(list)
+            self._req_dict.update(self._loadCfg(req_config))
+
+        @property
+        def install(self):
+            return self._req_dict["install"]
+
+        @property
+        def test(self):
+            return self._req_dict["test"]
+
+        @property
+        def dev(self):
+            return self._req_dict["dev"]
+
+        @property
+        def setup(self):
+            return self._req_dict["setup"]
+
+        @property
+        def extras(self):
+            extras = {}
+            for sect in [s for s in self._req_dict if s.startswith(self._EXTRA)]:
+                extras[sect[len(self._EXTRA):]] = self._req_dict[sect]
+            return extras
+
+        @property
+        def pins(self):
+            return self._req_dict[self._PINS]
+
+        def _loadCfg(self, req_config):
+            if not req_config.has_section(_CFG_REQS_SECT):
+                return {}
+
+            reqs = {}
+            for opt in req_config.options(_CFG_REQS_SECT):
+                if opt in self.GROUPS or opt.startswith(self._EXTRA) or opt == self._PINS:
+                    reqs[opt] = list()
+                    deps = req_config.get(_CFG_REQS_SECT, opt)
+                    if deps:
+                        for line in [l for l in deps.split("\n") if l.strip()]:
+                            reqs[opt] += [Requirement.parse(s.strip()) for s in line.split(",")]
+
+            return reqs
+
+        def write2(self, include_extras=True, freeze=False, upgrade=False, deep=False, groups=None):
+            if not _REQ_D.exists():
+                raise NotADirectoryError(str(_REQ_D))
+
+            output_files = []
+            groups = groups or list([k for k in self._req_dict.keys()
+                                     if self._req_dict[k] and (k in self.GROUPS or
+                                                               k.startswith(_EXTRA))
+                                     ]) + ["requirements"]
+            for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
+                # Individual requirements files
+                output_files.append(
+                    RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp],
+                                        pins=self.pins)
+                )
+
+            if "requirements" in groups:
+                # Make top-level requirements.txt files
+                pkg_reqs = []
+                for name, pkgs in self._req_dict.items():
+                    if name == "install" or (name.startswith(self._EXTRA) and include_extras):
+                        pkg_reqs += pkgs or []
+
+                if pkg_reqs:
+                    output_files.append(
+                        RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins)
+                    )
+
+            #import pdb; pdb.set_trace()
+            ...
+            for reqf in output_files:
+                reqf.write2(upgrade=upgrade, freeze=freeze, deep=deep)
+
+        def write(self, include_extras=True, freeze=False, upgrade=False, deep=False, groups=None):
+            all_reqs = []
+            for rf in output_reqs:
+                for r in rf.requirements:
+                    all_reqs.append(r)
+
+            if upgrade or freeze or deep:
+                futures = []
+
+                def thread_func(req):
+                    return (req, req.getDist())
+
+                num_threads = min(len(all_reqs), multiprocessing.cpu_count())
+                with ThreadPoolExecutor(max_workers=num_threads) as exe:
+                    for req in all_reqs:
+                        futures.append(exe.submit(thread_func, req))
+
+                    for fut in as_completed(futures, timeout=3 * len(all_reqs)):
+                        if fut.exception():
+                            raise fut.exception()
+
+            all_reqs = {}
+            # Combine all dup pkg specs and let the sorting in toString can figure it out
+            for rf in output_reqs:
+                for pkg, req in rf._resolve(deep).items():
+                    if pkg in all_reqs:
+                        curr = all_reqs[pkg]
+                        if pkg == "requests":
+                            print("DUP REQUESTS:", id(curr), id(req))
+                            # import pdb; pdb.set_trace()
+                            ...
+                        curr.specs.extend(req.specs)
+                        #import pdb; pdb.set_trace()
+                        req.specs.clear()
+                        req.specs.extend(curr.specs)
+                    else:
+                        all_reqs[pkg] = req
+
+
 
 
 def _main():
@@ -797,16 +937,8 @@ def _main():
         print(f"Writing {parcyl_py}")
         parcyl_py.write_bytes(Path(__file__).read_bytes())
         parcyl_py.chmod(0o755)
-
     elif args.cmd == "requirements":
-        req = SetupRequirements()
-        if True in (args.freeze, args.upgrade, args.deep) and johnnydep is None:
-            print("\nDependencies required for the --freeze/--upgrade/--deep options.\n"
-                  "Try `pip install parcyl[requirements]` to install.\n", file=sys.stderr)
-            args.freeze = args.upgrade = args.deep = False
-
-        req.write(freeze=args.freeze, upgrade=args.upgrade, deep=args.deep,
-                  groups=args.req_group or None)
+        return RequirementsCommand.main(args)
     else:
         p.print_usage()
 
