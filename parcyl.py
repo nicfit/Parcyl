@@ -19,14 +19,6 @@ from setuptools.command.test import test as _TestCommand
 from setuptools.command.develop import develop as _DevelopCommand
 from setuptools.command.install import install as _InstallCommand
 
-try:
-    import johnnydep
-    from johnnydep.lib import JohnnyDist
-    from johnnydep.logs import configure_logging
-    configure_logging(0)
-except ImportError:
-    johnnydep = None
-
 VERSION = "1.0a4"
 
 _EXTRA = "extra_"
@@ -232,16 +224,12 @@ class Requirement:
     class SpecsOpt(Enum):
         NONE = 0
         CURRENT = 1
-        VERSION_INSTALLED = 2
-        VERSION_LATEST = 3
 
     def __init__(self, requirement, scm_req=None):
         self._scm_requirement_string = scm_req
         self._requirement = requirement
 
         self._dist = None
-        self._version_installed = None
-        self._version_latest_in_spec = None
 
     def __str__(self):
         return self.toString()
@@ -289,10 +277,6 @@ class Requirement:
                     final_specs.append((op, v))
 
             s += ",".join([f"{op}{ver}" for op, ver in sorted(final_specs, reverse=True)])
-        elif specs == self.SpecsOpt.VERSION_INSTALLED and self.version_installed:
-            s += f"=={self.version_installed}"
-        elif specs == self.SpecsOpt.VERSION_LATEST and self.version_latest_in_spec:
-            s += f"=={self.version_latest_in_spec}"
 
         if marker and self.marker:
             s += f" ; {self.marker}"
@@ -327,14 +311,6 @@ class Requirement:
         return self._requirement.extras
 
     @property
-    def version_installed(self):
-        return self.dist.version_installed
-
-    @property
-    def version_latest_in_spec(self):
-        return self.dist.version_latest_in_spec
-
-    @property
     def requires(self):
         return list([Requirement.parse(r) for r in self.dist.requires])
 
@@ -360,27 +336,9 @@ class Requirement:
         req = _RequirementBase.parse(parse_string)
         return klass(req, scm_req=scm_requirement)
 
-    @property
-    def dist(self):
-        if self._dist is None:
-            if self._scm_requirement_string:
-                # Repo URLs have versions or a way for resolving requires
-                class DummyDist:
-                    requires = []
-                    version_installed = None
-                    version_latest_in_spec = None
-
-                self._dist = DummyDist()
-            else:
-                # Be sure to ignore environment markers, a dist is wanted for version info and
-                # should not infer determine installation.
-                self._dist = JohnnyDist(self.project_name)
-
-        return self._dist
-
 
 class SetupRequirements:
-    _EXTRA = "extra_"
+    _EXTRA = _EXTRA
     _PINS = "pins"
     GROUPS = ["install", "test", "dev", "setup"]
 
@@ -435,7 +393,7 @@ class SetupRequirements:
 
         return reqs
 
-    def write(self, include_extras=True, freeze=False, upgrade=False, deep=False, groups=None):
+    def write(self, include_extras=True, groups=None):
         if not _REQ_D.exists():
             raise NotADirectoryError(str(_REQ_D))
 
@@ -448,7 +406,7 @@ class SetupRequirements:
             # Individual requirements files
             RequirementsDotText(_REQ_D / f"{req_grp}.txt",
                                 reqs=self._req_dict[req_grp], pins=self.pins)\
-                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
+                    .write()
 
         if "requirements" in groups:
             # Make top-level requirements.txt files
@@ -459,7 +417,7 @@ class SetupRequirements:
 
             if pkg_reqs and "requirements" in groups:
                 RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins) \
-                    .write(upgrade=upgrade, freeze=freeze, deep=deep)
+                    .write()
 
 
 class RequirementsDotText:
@@ -498,73 +456,28 @@ class RequirementsDotText:
             r = Requirement.parse(line)
             self._reqs[r.key] = r
 
-    def write(self, upgrade=False, freeze=False, deep=False):
-        def specfmt(req: Requirement, curr_reqs):
+    def write(self):
+
+        def specfmt(req: Requirement):
             if req.specs:
                 return Requirement.SpecsOpt.CURRENT
-            elif upgrade and req.version_latest_in_spec:
-                return Requirement.SpecsOpt.VERSION_LATEST
-            elif freeze:
-                if req.version_installed:
-                    return Requirement.SpecsOpt.VERSION_INSTALLED
-                else:
-                    curr = curr_reqs.get(req.key)
-                    if curr and curr.specs:
-                        req.specs.extend(curr.specs)
-                        return Requirement.SpecsOpt.CURRENT
-                    else:
-                        return Requirement.SpecsOpt.VERSION_LATEST
 
-        def addreq(r):
-            """Add or update the requirement in `all`."""
-            if not hasattr(r, "required_by"):
-                r.required_by = []
-
-            # Replace any pinned requirements
-            if r.key in pins and pins[r.key] is not r:
-                pinned_r = pins[r.key]
-                if not hasattr(pinned_r, "required_by"):
-                    pinned_r.required_by = []
-                for rr in r.required_by:
-                    pinned_r.required_by.append(rr)
-
-                r = pinned_r
-
-            if r.key in all:
-                curr = all[r.key]
-
-                if r.required_by:
-                    curr.required_by.append(r.required_by.pop())
-
-                for spec in r.specs:
-                    if spec not in curr.specs:
-                        curr.specs.append(spec)
-            else:
-                all[r.key] = r
-
-        all = {}
-        pins = {r.key: r for r in self._pins}
+        all_reqs = {}
+        # FIXME: unused pins
+        pins = {r.key: r for r in self._pins}  # noqa
         for req in sorted(self._reqs.values()):
-            # Main purpose of this loop is to find and collapse dups
-            if deep:
-                for dep in req.requires:
-                    dep.required_by = [req.project_name]
-                    addreq(dep)
-            addreq(req)
+            all_reqs[req.key] = req
 
         filepath = Path(self.filepath)
         file_exists = filepath.exists()
         with filepath.open("r+" if file_exists else "w") as fp:
-            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)
+            # FIXME: unused curr_reqs
+            curr_reqs = RequirementsDotText(filepath, file=fp if file_exists else None)  # noqa
 
             fp.seek(0)
             fp.truncate(0)
-            for req in all.values():
-                if req.required_by:
-                    required_by = f" # Required by {','.join(req.required_by)}"
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs)):<40}{required_by}\n")
-                else:
-                    fp.write(f"{req.toString(specfmt(req, curr_reqs))}\n")
+            for req in all_reqs.values():
+                fp.write(f"{req.toString(specfmt(req))}\n")
 
             print(f"Wrote {filepath}")
 
@@ -681,14 +594,7 @@ def _main():
     inst_p.add_argument("--force", action="store_true", help="Overwrite an existing parcyl.py")
 
     reqs_p = subcmds.add_parser("requirements",
-                                help="Generate and freeze requirements (setup.cfg -> *.txt)")
-    version_updater_grp = reqs_p.add_mutually_exclusive_group()
-    version_updater_grp.add_argument("-F", "--freeze", action="store_true",
-                        help="Pin packages to currently install versions")
-    version_updater_grp.add_argument("-U", "--upgrade", action="store_true",
-                        help="Pin packages to latest version matching version specs.")
-    reqs_p.add_argument("-D", "--deep", action="store_true",
-                        help="Include the dependencies of packages.")
+                                help="Generate requirement files (setup.cfg -> *.txt)")
     reqs_p.add_argument("req_group", action="store", nargs="*",
                         help="Which requirements group/file to operate on.")
 
@@ -706,13 +612,7 @@ def _main():
 
     elif args.cmd == "requirements":
         req = SetupRequirements()
-        if True in (args.freeze, args.upgrade, args.deep) and johnnydep is None:
-            print("\nDependencies required for the --freeze/--upgrade/--deep options.\n"
-                  "Try `pip install parcyl[requirements]` to install.\n", file=sys.stderr)
-            args.freeze = args.upgrade = args.deep = False
-
-        req.write(freeze=args.freeze, upgrade=args.upgrade, deep=args.deep,
-                  groups=args.req_group or None)
+        req.write(groups=args.req_group or None)
     else:
         p.print_usage()
 
@@ -722,7 +622,7 @@ __all__ = ["Setup", "setup", "find_packages", "find_package_files"]
 if __name__ == "__main__":
     try:
         sys.exit(_main() or 0)
-    except Exception as uncaught:
+    except Exception:
         import traceback
         traceback.print_exc()
         sys.exit(127)

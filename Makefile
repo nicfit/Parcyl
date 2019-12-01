@@ -16,7 +16,7 @@ lint:
 
 
 requirements:
-	parcyl.py requirements --freeze --deep
+	parcyl.py requirements
 
 
 requirements-upgrade:

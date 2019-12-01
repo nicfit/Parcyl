@@ -101,8 +101,6 @@ def test_parseVersion():
     assert vstr == "1"
 
 
-    #v = parseVersion("0.8.10.rc1.dev666+arch-foo")
-
 def test_parseVersionInvalid():
     for V in ("Slapshot", "Slapshot-1.0"):
         with pytest.raises(ValueError):
