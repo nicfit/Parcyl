@@ -184,7 +184,7 @@ version_info = Version({vinfo.major}, {vinfo.minor}, {vinfo.maint}, "{vinfo.rele
         attrs.update(setup_attrs)
 
         if add_status_classifiers:
-            if attrs["classifiers"] is None:
+            if attrs["classifiers"] in (None, ""):
                 attrs["classifiers"] = []
 
             release = (attrs["release"] or "") if "release" in attrs else ""
@@ -193,8 +193,7 @@ version_info = Version({vinfo.major}, {vinfo.minor}, {vinfo.maint}, "{vinfo.rele
             elif release.startswith("b"):
                 attrs["classifiers"].append(STATUS_CLASSIFIERS["beta"])
             else:
-                if type(attrs["classifiers"]) is list:
-                    attrs["classifiers"].append(STATUS_CLASSIFIERS["final"])
+                attrs["classifiers"].append(STATUS_CLASSIFIERS["final"])
 
         # Found it difficult to hook into setuptools to *add* this option.
         # Ideally, `setup.py --version --release-name` would do the right order, not here.
