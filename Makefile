@@ -1,3 +1,5 @@
+.PHONY: build dist requirements test
+
 PYTEST_ARGS ?=
 PYPI_REPO ?= pypitest
 PROJECT_NAME = $(shell python setup.py --name 2> /dev/null)
@@ -8,8 +10,10 @@ all: build
 
 
 build:
-	python setup.py build
+	./setup.py build
 
+develop:
+	./setup.py develop
 
 lint:
 	tox -e lint
@@ -32,11 +36,15 @@ test-all:
 
 
 install: build
-	python setup.py install
+	./setup.py install
 
 
-dist: build
-	python setup.py sdist bdist_wheel
+sdist: build
+	./setup.py sdist --formats=gztar,zip
+
+dist: clean sdist
+	./setup.py bdist_egg
+	./setup.py bdist_wheel
 
 
 pre-release: maintainer-clean test dist
@@ -114,5 +122,3 @@ github-release-tool:
 	@test -n "${GITHUB_USER}" || (echo "GITHUB_USER not set, needed for github" && false)
 	@test -n "${GITHUB_TOKEN}" || (echo "GITHUB_TOKEN not set, needed for github" && false)
 
-
-.PHONY: test dist requirements

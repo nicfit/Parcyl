@@ -193,7 +193,8 @@ version_info = Version({vinfo.major}, {vinfo.minor}, {vinfo.maint}, "{vinfo.rele
             elif release.startswith("b"):
                 attrs["classifiers"].append(STATUS_CLASSIFIERS["beta"])
             else:
-                attrs["classifiers"].append(STATUS_CLASSIFIERS["final"])
+                if type(attrs["classifiers"]) is list:
+                    attrs["classifiers"].append(STATUS_CLASSIFIERS["final"])
 
         # Found it difficult to hook into setuptools to *add* this option.
         # Ideally, `setup.py --version --release-name` would do the right order, not here.
@@ -416,8 +417,11 @@ class SetupRequirements:
                     pkg_reqs += pkgs or []
 
             if pkg_reqs and "requirements" in groups:
-                RequirementsDotText("requirements.txt", reqs=pkg_reqs, pins=self.pins) \
-                    .write()
+                RequirementsDotText("requirements/requirements.txt",
+                                    reqs=pkg_reqs, pins=self.pins).write()
+
+    def __bool__(self):
+        return bool(self._req_dict)
 
 
 class RequirementsDotText:
@@ -611,10 +615,13 @@ def _main():
         parcyl_py.chmod(0o755)
 
     elif args.cmd == "requirements":
-        req = SetupRequirements()
-        req.write(groups=args.req_group or None)
-    else:
-        p.print_usage()
+        try:
+            req = SetupRequirements()
+            if req:
+                req.write(groups=args.req_group or None)
+        except RequirementParseError as req_err:
+            print(req_err, file=sys.stderr)
+            return 1
 
 
 find_packages = setuptools.find_packages
