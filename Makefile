@@ -20,11 +20,10 @@ lint:
 
 
 requirements:
-	parcyl.py requirements
-
-
-requirements-upgrade:
-	parcyl.py requirements --upgrade --deep
+	@parcyl.py requirements
+	@for f in extra_requirements.txt test.txt dev.txt ; do \
+  		pip-compile requirements/$${f}; \
+  	done
 
 
 test:
