@@ -6,6 +6,7 @@ import logging
 import warnings
 import functools
 import setuptools
+import subprocess
 import configparser
 from enum import Enum
 from pathlib import Path
@@ -591,6 +592,11 @@ def parseVersion(v):
     return ver, ver_info
 
 
+def _pipCompile(path):
+    print(f"Compiling {path}...")
+    subprocess.run(f"pip-compile --annotate --upgrade -o {path} {path}", shell=True, check=True)
+
+
 def _main():
     import argparse
 
@@ -608,6 +614,8 @@ def _main():
                         help="Which requirements group/file to operate on.")
     reqs_p.add_argument("-R", "--requirements.txt", dest="requirements_txt", action="store_true",
                         help="Write a requirements.txt file composed of install and all extras.")
+    reqs_p.add_argument("-C", "--compile", dest="compile", action="store_true",
+                        help="Compile requirement files.")
 
     args = p.parse_args()
 
@@ -626,7 +634,11 @@ def _main():
             req = SetupRequirements()
             if req:
                 req.write(groups=args.req_group or None, requirements_txt=args.requirements_txt)
-        except RequirementParseError as req_err:
+
+            if args.compile:
+                for req_txt in req.iterReqs(groups=args.req_group or None):
+                    _pipCompile(req_txt.filepath)
+        except (RequirementParseError, subprocess.CalledProcessError) as req_err:
             print(req_err, file=sys.stderr)
             return 1
 

@@ -20,10 +20,7 @@ lint:
 
 
 requirements:
-	@parcyl.py requirements
-	@for f in extra_requirements.txt test.txt dev.txt ; do \
-  		pip-compile requirements/$${f}; \
-  	done
+	@parcyl.py requirements --requirements.txt --compile
 
 
 test:
