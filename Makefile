@@ -28,7 +28,9 @@ test:
 
 
 test-all:
+	tox -e clean
 	tox --parallel=all
+	tox -e coverage
 
 
 install: build
