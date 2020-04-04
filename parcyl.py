@@ -393,10 +393,7 @@ class SetupRequirements:
 
         return reqs
 
-    def write(self, include_extras=True, groups=None):
-        if not _REQ_D.exists():
-            raise NotADirectoryError(str(_REQ_D))
-
+    def iterReqs(self, groups=None):
         groups = groups or list([k for k in self._req_dict.keys()
                                     if self._req_dict[k] and (k in self.GROUPS or
                                                               k.startswith(_EXTRA))
@@ -404,20 +401,29 @@ class SetupRequirements:
 
         for req_grp in [k for k in self._req_dict.keys() if self._req_dict[k] and k in groups]:
             # Individual requirements files
-            RequirementsDotText(_REQ_D / f"{req_grp}.txt",
-                                reqs=self._req_dict[req_grp], pins=self.pins)\
-                    .write()
+            yield RequirementsDotText(_REQ_D / f"{req_grp}.txt", reqs=self._req_dict[req_grp],
+                                      pins=self.pins)
 
-        if "requirements" in groups:
+    def write(self, groups=None, requirements_txt=False):
+        if not _REQ_D.exists():
+            raise NotADirectoryError(str(_REQ_D))
+
+        for reqs_txt in self.iterReqs(groups=groups):
+            reqs_txt.write()
+
+        # TODO: Future option of not including extras
+        include_extras = True
+
+        if requirements_txt:
             # Make top-level requirements.txt files
             pkg_reqs = []
             for name, pkgs in self._req_dict.items():
                 if name == "install" or (name.startswith(self._EXTRA) and include_extras):
                     pkg_reqs += pkgs or []
 
-            if pkg_reqs and "requirements" in groups:
-                RequirementsDotText("requirements/requirements.txt",
-                                    reqs=pkg_reqs, pins=self.pins).write()
+            if pkg_reqs:
+                RequirementsDotText("requirements/requirements.txt", reqs=pkg_reqs,
+                                    pins=self.pins).write()
 
     def __bool__(self):
         return bool(self._req_dict)
@@ -600,6 +606,8 @@ def _main():
                                 help="Generate requirement files (setup.cfg -> *.txt)")
     reqs_p.add_argument("req_group", action="store", nargs="*",
                         help="Which requirements group/file to operate on.")
+    reqs_p.add_argument("-R", "--requirements.txt", dest="requirements_txt", action="store_true",
+                        help="Write a requirements.txt file composed of install and all extras.")
 
     args = p.parse_args()
 
@@ -617,7 +625,7 @@ def _main():
         try:
             req = SetupRequirements()
             if req:
-                req.write(groups=args.req_group or None)
+                req.write(groups=args.req_group or None, requirements_txt=args.requirements_txt)
         except RequirementParseError as req_err:
             print(req_err, file=sys.stderr)
             return 1
