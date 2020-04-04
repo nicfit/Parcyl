@@ -20,6 +20,7 @@ from setuptools.command.test import test as _TestCommand
 from setuptools.command.develop import develop as _DevelopCommand
 from setuptools.command.install import install as _InstallCommand
 
+# FIXME: dup'd in setup.cfg, which should be the source of truth
 VERSION = "1.0a4"
 
 _EXTRA = "extra_"
