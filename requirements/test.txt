@@ -12,7 +12,7 @@ importlib-metadata==1.6.0  # via pluggy, pytest, tox, virtualenv
 more-itertools==8.2.0     # via pytest
 packaging==20.3           # via pytest, tox
 pluggy==0.13.1            # via pytest, tox
-py==1.8.1                 # via pytest, tox
+py==1.10.0                 # via pytest, tox
 pyparsing==2.4.6          # via packaging
 pytest==5.4.1             # via -r requirements/test.txt
 six==1.14.0               # via packaging, tox, virtualenv
